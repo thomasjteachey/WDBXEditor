@@ -55,7 +55,7 @@ namespace WDBXEditor
 
             try
             {
-                using (MySqlConnection connection = new MySqlConnection(ConnectionString))
+                using (MySqlConnection connection = new MySqlConnection(ConnectionString + ""))
                 {
                     connection.Open();
                     MySqlCommand command = new MySqlCommand("SHOW DATABASES;", connection);

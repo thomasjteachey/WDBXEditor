@@ -298,7 +298,7 @@ namespace WDBXEditor.Storage
 				foreach (var field in header.ColumnMeta)
 				{
 					Type type = Data.Columns[c].DataType;
-					bool isneeded = field.CompressionType >= CompressionType.Sparse;
+					bool isneeded = field.CompressionType >= Constants.CompressionType.Sparse;
 
 					if (bytecounts.ContainsKey(type) && isneeded)
 					{
@@ -483,7 +483,7 @@ namespace WDBXEditor.Storage
 		/// <returns></returns>
 		public string ToSQL()
 		{
-			string tableName = $"db_{TableStructure.Name}_{Build}";
+			string tableName = $"{TableStructure.Name}_{Build}";
 
 			StringBuilder sb = new StringBuilder();
 			sb.AppendLine($"DROP TABLE IF EXISTS `{tableName}`; ");
@@ -500,7 +500,7 @@ namespace WDBXEditor.Storage
 		/// <param name="connectionstring"></param>
 		public void ToSQLTable(string connectionstring)
 		{
-			string tableName = $"db_{TableStructure.Name}_{Build}";
+			string tableName = $"{TableStructure.Name}_{Build}";
 			string csvName = Path.Combine(TEMP_FOLDER, tableName + ".csv");
 			StringBuilder sb = new StringBuilder();
 			sb.AppendLine("SET SESSION sql_mode = 'NO_ENGINE_SUBSTITUTION';");
@@ -510,14 +510,14 @@ namespace WDBXEditor.Storage
 			using (StreamWriter csv = new StreamWriter(csvName))
 				csv.Write(ToCSV());
 
-			using (MySqlConnection connection = new MySqlConnection(connectionstring))
+			using (MySqlConnection connection = new MySqlConnection(connectionstring + ";allowLoadLocalInfile=true;"))
 			{
 				connection.Open();
 
 				using (MySqlCommand command = new MySqlCommand(sb.ToString(), connection))
 					command.ExecuteNonQuery();
 
-				new MySqlBulkLoader(connection)
+				MySqlBulkLoader bl = new MySqlBulkLoader(connection)
 				{
 					TableName = $"`{tableName}`",
 					FieldTerminator = ",",
@@ -526,7 +526,9 @@ namespace WDBXEditor.Storage
 					FileName = csvName,
 					FieldQuotationCharacter = '"',
 					CharacterSet = "UTF8"
-				}.Load();
+				};
+				bl.Local = true;
+				bl.Load();
 			}
 
 			try { File.Delete(csvName); }
@@ -644,6 +646,8 @@ namespace WDBXEditor.Storage
 			DataTable importTable = Data.Clone(); //Clone table structure to help with mapping
 
 			HashSet<int> usedids = new HashSet<int>();
+			string column = "";
+			string lineCache = "";
 			int idcolumn = Data.Columns[Key].Ordinal;
 			int maxid = int.MinValue;
 
@@ -671,12 +675,16 @@ namespace WDBXEditor.Storage
 					while (!sr.EndOfStream)
 					{
 						string line = sr.ReadLine();
-						string[] rows = Regex.Split(line, ",(?=(?:[^\"]*\"[^\"]*\")*(?![^\"]*\"))", RegexOptions.Compiled);
+						lineCache = line;
+
+                        string[] rows = Regex.Split(line, ",(?=(?:[^\"]*\"[^\"]*\")*(?![^\"]*\"))", RegexOptions.Compiled);
 						DataRow dr = importTable.NewRow();
 
 						for (int i = 0; i < Data.Columns.Count; i++)
 						{
-							string value = Unescape(rows[i]);
+                            column = Data.Columns[i].ColumnName;
+
+                            string value = Unescape(rows[i]);
 
 							switch (Data.Columns[i].DataType.Name.ToLower())
 							{
@@ -749,9 +757,9 @@ namespace WDBXEditor.Storage
 					}
 				}
 			}
-			catch (FormatException)
+			catch (FormatException ex)
 			{
-				error = $"Mismatch of data to datatype in row index {usedids.Count + 1}";
+				error = $"Mismatch of data to datatype in row index {usedids.Count + 1} columnName: {column} lineCache: {lineCache}";
 				return false;
 			}
 			catch (Exception ex)
@@ -806,12 +814,16 @@ namespace WDBXEditor.Storage
 
 			//Replace DBNulls with default value
 			var defaultVals = importTable.Columns.Cast<DataColumn>().Select(x => x.DefaultValue).ToArray();
-			Parallel.For(0, importTable.Rows.Count, r =>
+
+			for (int r = 0; r < importTable.Rows.Count; r++)
 			{
-				for (int i = 0; i < importTable.Columns.Count; i++)
-					if (importTable.Rows[r][i] == DBNull.Value)
-						importTable.Rows[r][i] = defaultVals[i];
-			});
+                for (int i = 0; i < importTable.Columns.Count; i++)
+                    if (importTable.Rows[r][i] == DBNull.Value)
+                    {
+                        DataRow dr = importTable.Rows[r];
+                        dr[i] = defaultVals[i];
+                    }
+            }
 
 			switch (Data.ShallowCompare(importTable))
 			{
